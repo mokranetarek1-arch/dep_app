@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "534291712626",
+    "firebase_url": "https://crmdep-default-rtdb.firebaseio.com",
+    "project_id": "crmdep",
+    "storage_bucket": "crmdep.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:534291712626:android:975161790a9589132650eb",
+        "android_client_info": {
+          "package_name": "com.crmdep.driver"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBKVYMl46FooO881TYLE5LfRcjasKGS4y4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
