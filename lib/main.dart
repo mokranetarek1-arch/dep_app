@@ -3,7 +3,6 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'firebase_options.dart';
@@ -18,10 +17,7 @@ const Color kAccent = Color(0xFF0E7490);
 const Color kSuccess = Color(0xFF1F7A4D);
 const Color kDanger = Color(0xFFC0392B);
 const Color kWarning = Color(0xFFD97706);
-const Color kInk = Color(0xFF15222B);
-const Color kSky = Color(0xFFD9EEF6);
-const double kCommissionRate = 0.1;
-const String kDriverAuthPassword = 'depzinedine!';
+const String kDriverAuthPassword = 'DriverTest123!';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,20 +41,6 @@ class DriverApp extends StatelessWidget {
         ),
         scaffoldBackgroundColor: kBg,
         useMaterial3: true,
-        navigationBarTheme: const NavigationBarThemeData(
-          indicatorColor: Color(0xFFFFD8C9),
-          backgroundColor: kPanel,
-          labelTextStyle: WidgetStatePropertyAll(
-            TextStyle(fontWeight: FontWeight.w700),
-          ),
-        ),
-        filledButtonTheme: FilledButtonThemeData(
-          style: FilledButton.styleFrom(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
-            ),
-          ),
-        ),
       ),
       home: const DriverGate(),
     );
@@ -319,12 +301,11 @@ class DriverHome extends StatefulWidget {
 
 class _DriverHomeState extends State<DriverHome> {
   int _currentIndex = 0;
-  bool _updatingAvailability = false;
-  StreamSubscription<Position>? _positionSubscription;
-  String? _trackedDriverId;
-  Position? _lastPosition;
-  String _locationState = 'Initialisation GPS...';
   bool _requestingLocation = false;
+  String? _trackingDriverId;
+  String _locationState = 'Localisation non activee';
+  Position? _lastPosition;
+  StreamSubscription<Position>? _positionSubscription;
 
   @override
   void dispose() {
@@ -335,23 +316,32 @@ class _DriverHomeState extends State<DriverHome> {
   Future<void> _logout() async {
     await _positionSubscription?.cancel();
     _positionSubscription = null;
-    _trackedDriverId = null;
     await FirebaseAuth.instance.signOut();
     widget.onLogout();
   }
 
-  Future<void> _ensureTrackingForDriver(
+  Future<void> _activateLocationTracking(
     String driverId,
     Map<String, dynamic> driver,
   ) async {
-    if (_trackedDriverId == driverId || _requestingLocation) {
+    if (_requestingLocation || _trackingDriverId == driverId) {
       return;
     }
 
     _requestingLocation = true;
-    await _positionSubscription?.cancel();
+    if (mounted) {
+      setState(() => _locationState = 'Demande de permission GPS...');
+    }
 
     try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
+          setState(() => _locationState = 'Active le GPS du telephone');
+        }
+        return;
+      }
+
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -360,34 +350,27 @@ class _DriverHomeState extends State<DriverHome> {
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
         if (mounted) {
-          setState(() => _locationState = 'Autorisation GPS refusee');
-        }
-        return;
-      }
-
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        if (mounted) {
-          setState(() => _locationState = 'Active la localisation du telephone');
+          setState(() => _locationState = 'Permission localisation refusee');
         }
         return;
       }
 
       final current = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
+        desiredAccuracy: LocationAccuracy.best,
       );
-      await _pushDriverLocation(driverId, driver, current);
+      await _publishDriverLocation(driverId, driver, current);
 
+      await _positionSubscription?.cancel();
       _positionSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.bestForNavigation,
+          accuracy: LocationAccuracy.best,
           distanceFilter: 5,
         ),
       ).listen((position) {
-        _pushDriverLocation(driverId, driver, position);
+        _publishDriverLocation(driverId, driver, position);
       });
 
-      _trackedDriverId = driverId;
+      _trackingDriverId = driverId;
     } catch (_) {
       if (mounted) {
         setState(() => _locationState = 'Localisation indisponible');
@@ -397,34 +380,18 @@ class _DriverHomeState extends State<DriverHome> {
     }
   }
 
-  Future<void> _pushDriverLocation(
+  Future<void> _publishDriverLocation(
     String driverId,
     Map<String, dynamic> driver,
     Position position,
   ) async {
-    final payload = {
-      'driverId': driverId,
-      'driverName': '${driver['firstName'] ?? ''} ${driver['lastName'] ?? ''}'
-          .trim(),
-      'phone': '${driver['phone'] ?? ''}',
-      'lat': position.latitude,
-      'lng': position.longitude,
-      'accuracy': position.accuracy,
-      'heading': position.heading,
-      'speed': position.speed,
-      'isOnline': true,
-      'isAvailable': driver['isAvailable'] ?? true,
-      'updatedAt': ServerValue.timestamp,
-    };
-
-    await FirebaseDatabase.instance.ref('driver_status/$driverId').update(payload);
     await FirebaseFirestore.instance.collection('drivers').doc(driverId).update({
       'currentLocation': {
         'lat': position.latitude,
         'lng': position.longitude,
         'accuracy': position.accuracy,
-        'heading': position.heading,
         'speed': position.speed,
+        'heading': position.heading,
       },
       'lastLocationAt': FieldValue.serverTimestamp(),
     });
@@ -438,39 +405,9 @@ class _DriverHomeState extends State<DriverHome> {
     }
   }
 
-  Future<void> _updateAvailability({
-    required String driverId,
-    required bool available,
-  }) async {
-    setState(() => _updatingAvailability = true);
-    try {
-      await FirebaseFirestore.instance
-          .collection('drivers')
-          .doc(driverId)
-          .update({
-            'isAvailable': available,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-
-      await FirebaseDatabase.instance.ref('driver_status/$driverId').update({
-        'isOnline': true,
-        'isAvailable': available,
-        'lastSeen': ServerValue.timestamp,
-      });
-    } finally {
-      if (mounted) {
-        setState(() => _updatingAvailability = false);
-      }
-    }
-  }
-
-  Future<void> _updateMissionStatus(
-    String collectionName,
-    String missionId,
-    String status,
-  ) {
+  Future<void> _updateMissionStatus(String missionId, String status) {
     return FirebaseFirestore.instance
-        .collection(collectionName)
+        .collection('requests')
         .doc(missionId)
         .update({
           'status': status,
@@ -539,118 +476,101 @@ class _DriverHomeState extends State<DriverHome> {
         final driverDoc = matchingDriver;
         final driver = driverDoc.data();
 
-        _ensureTrackingForDriver(driverDoc.id, driver);
-
-        FirebaseDatabase.instance.ref('driver_status/${driverDoc.id}').update({
-          'isOnline': true,
-          'isAvailable': driver['isAvailable'] ?? true,
-          'lastSeen': ServerValue.timestamp,
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _activateLocationTracking(driverDoc.id, driver);
         });
 
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
           stream: FirebaseFirestore.instance.collection('requests').snapshots(),
-          builder: (context, requestsSnapshot) {
-            if (requestsSnapshot.connectionState == ConnectionState.waiting) {
-              return const LoadingScreen(message: 'Chargement des courses...');
+          builder: (context, missionSnapshot) {
+            if (missionSnapshot.connectionState == ConnectionState.waiting) {
+              return const LoadingScreen(message: 'Chargement des missions...');
             }
 
-            return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream:
-                  FirebaseFirestore.instance.collection('assuranceTrips').snapshots(),
-              builder: (context, assuranceSnapshot) {
-                if (assuranceSnapshot.connectionState == ConnectionState.waiting) {
-                  return const LoadingScreen(
-                    message: 'Chargement des courses assurance...',
-                  );
-                }
-
-                final requests =
-                    (requestsSnapshot.data?.docs ?? [])
-                        .where((doc) => isDriverRequest(doc.data(), driverDoc.id))
-                        .toList();
-                final assuranceTrips =
-                    (assuranceSnapshot.data?.docs ?? [])
-                        .where(
-                          (doc) => isDriverAssuranceTrip(doc.data(), driverDoc.id),
-                        )
-                        .toList();
-
-                final missions = [...requests, ...assuranceTrips]
-                  ..sort((a, b) {
-                    final left = extractSortValue(b.data());
-                    final right = extractSortValue(a.data());
-                    return left.compareTo(right);
-                  });
-
-                final completed =
-                    missions.where((doc) => isCompletedTrip(doc.data())).toList();
-                final inProgress =
-                    missions.where((doc) => isInProgressTrip(doc.data())).toList();
-
-                final paidCommissionFuture = FirebaseFirestore.instance
-                    .collection('driverPayments')
-                    .where('driverId', isEqualTo: driverDoc.id)
-                    .where('regle', isEqualTo: true)
-                    .get();
-
-                final estimatedCommission = completed.fold<double>(0, (sum, doc) {
-                  return sum + tripCommission(doc.data());
+            final List<QueryDocumentSnapshot<Map<String, dynamic>>> missions =
+                List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
+                  (missionSnapshot.data?.docs ??
+                          <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+                      .where(
+                        (doc) => isDriverRequest(doc.data(), driverDoc.id),
+                      ),
+                )..sort((a, b) {
+                  final left = extractComparableDate(b.data());
+                  final right = extractComparableDate(a.data());
+                  final leftSeconds = left is Timestamp ? left.seconds : 0;
+                  final rightSeconds = right is Timestamp ? right.seconds : 0;
+                  return leftSeconds.compareTo(rightSeconds);
                 });
 
-                final pages = [
-                  TripsPage(
-                    driver: driver,
-                    inProgressCount: inProgress.length,
-                    completedCount: completed.length,
-                    updatingAvailability: _updatingAvailability,
-                    locationState: _locationState,
-                    lastPosition: _lastPosition,
-                    onAvailabilityChanged: (value) => _updateAvailability(
-                      driverId: driverDoc.id,
-                      available: value,
-                    ),
-                    missions: missions,
-                    onMissionStatusChanged: _updateMissionStatus,
-                  ),
-                  CommissionPage(
-                    missions: missions,
-                    estimatedCommission: estimatedCommission,
-                    paidCommissionFuture: paidCommissionFuture,
-                  ),
-                  ProfilePage(
-                    driver: driver,
-                    onLogout: _logout,
-                    locationState: _locationState,
-                    lastPosition: _lastPosition,
-                  ),
-                ];
+            final completed = missions
+                .where((doc) => isCompletedRequest(doc.data()))
+                .toList();
+            final inProgress = missions.where((doc) {
+              return isInProgressRequest(doc.data());
+            }).toList();
 
-                return Scaffold(
-                  body: SafeArea(child: pages[_currentIndex]),
-                  bottomNavigationBar: NavigationBar(
-                    selectedIndex: _currentIndex,
-                    onDestinationSelected: (index) =>
-                        setState(() => _currentIndex = index),
-                    destinations: const [
-                      NavigationDestination(
-                        icon: Icon(Icons.local_shipping_outlined),
-                        selectedIcon: Icon(Icons.local_shipping),
-                        label: 'Courses',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.payments_outlined),
-                        selectedIcon: Icon(Icons.payments),
-                        label: 'Commission',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.person_outline),
-                        selectedIcon: Icon(Icons.person),
-                        label: 'Profil',
-                      ),
-                    ],
+            final paidCommissionFuture = FirebaseFirestore.instance
+                .collection('driverPayments')
+                .where('driverId', isEqualTo: driverDoc.id)
+                .where('regle', isEqualTo: true)
+                .get();
+
+            final estimatedCommission = completed.fold<double>(0, (sum, doc) {
+              final data = doc.data();
+              return sum + tripAmount(data);
+            });
+
+            final pages = [
+              TripsPage(
+                driver: driver,
+                inProgressCount: inProgress.length,
+                completedCount: completed.length,
+                locationState: _locationState,
+                lastPosition: _lastPosition,
+                onRequestLocation: () =>
+                    _activateLocationTracking(driverDoc.id, driver),
+                missions: missions,
+                onMissionStatusChanged: _updateMissionStatus,
+              ),
+              CommissionPage(
+                missions: missions,
+                estimatedCommission: estimatedCommission,
+                paidCommissionFuture: paidCommissionFuture,
+              ),
+              ProfilePage(
+                driver: driver,
+                onLogout: _logout,
+                locationState: _locationState,
+                lastPosition: _lastPosition,
+                onRequestLocation: () =>
+                    _activateLocationTracking(driverDoc.id, driver),
+              ),
+            ];
+
+            return Scaffold(
+              body: SafeArea(child: pages[_currentIndex]),
+              bottomNavigationBar: NavigationBar(
+                selectedIndex: _currentIndex,
+                onDestinationSelected: (index) =>
+                    setState(() => _currentIndex = index),
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(Icons.local_shipping_outlined),
+                    selectedIcon: Icon(Icons.local_shipping),
+                    label: 'Courses',
                   ),
-                );
-              },
+                  NavigationDestination(
+                    icon: Icon(Icons.payments_outlined),
+                    selectedIcon: Icon(Icons.payments),
+                    label: 'Commission',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.person_outline),
+                    selectedIcon: Icon(Icons.person),
+                    label: 'Profil',
+                  ),
+                ],
+              ),
             );
           },
         );
@@ -716,10 +636,9 @@ class TripsPage extends StatelessWidget {
     required this.driver,
     required this.inProgressCount,
     required this.completedCount,
-    required this.updatingAvailability,
     required this.locationState,
     required this.lastPosition,
-    required this.onAvailabilityChanged,
+    required this.onRequestLocation,
     required this.missions,
     required this.onMissionStatusChanged,
   });
@@ -727,80 +646,81 @@ class TripsPage extends StatelessWidget {
   final Map<String, dynamic> driver;
   final int inProgressCount;
   final int completedCount;
-  final bool updatingAvailability;
   final String locationState;
   final Position? lastPosition;
-  final ValueChanged<bool> onAvailabilityChanged;
+  final Future<void> Function() onRequestLocation;
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> missions;
-  final Future<void> Function(String collectionName, String missionId, String status)
+  final Future<void> Function(String missionId, String status)
   onMissionStatusChanged;
 
   @override
   Widget build(BuildContext context) {
-    final isAvailable = driver['isAvailable'] == true;
-
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          HeroPanel(
-            title:
-                '${driver['firstName'] ?? ''} ${driver['lastName'] ?? ''}'.trim(),
-            subtitle:
-                '${driver['phone'] ?? '-'} • ${driver['wilaya'] ?? '-'} • ${driver['region'] ?? '-'}',
-            statusText: isAvailable ? 'Disponible' : 'Hors ligne',
-            statusColor: isAvailable ? kSuccess : kDanger,
+          HeaderCard(
+            title: '${driver['firstName'] ?? ''} ${driver['lastName'] ?? ''}'
+                .trim(),
+            subtitle: '${driver['phone'] ?? '-'} | ${driver['wilaya'] ?? '-'}',
+            eyebrow: 'Chauffeur connecte',
+            trailing: const StatusBadge(
+              label: 'GPS suivi',
+              color: kAccent,
+            ),
+          ),
+          const SizedBox(height: 16),
+          MetricCard(
+            label: 'Courses en cours',
+            value: inProgressCount.toString(),
+            backgroundColor: const Color(0xFFFFD8C9),
+            valueColor: kText,
+            labelColor: kMuted,
+          ),
+          const SizedBox(height: 12),
+          MetricCard(
+            label: 'Courses terminees',
+            value: completedCount.toString(),
+            backgroundColor: const Color(0xFFD7F4E3),
+            valueColor: kText,
+            labelColor: kMuted,
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            title: 'Localisation',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: MiniMetric(
-                        label: 'Courses actives',
-                        value: inProgressCount.toString(),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: MiniMetric(
-                        label: 'Terminees',
-                        value: completedCount.toString(),
-                      ),
-                    ),
-                  ],
+                InfoLine(label: 'Etat GPS', value: locationState),
+                InfoLine(
+                  label: 'Latitude',
+                  value: lastPosition == null
+                      ? '-'
+                      : lastPosition!.latitude.toStringAsFixed(6),
                 ),
-                const SizedBox(height: 14),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          locationState,
-                          style: const TextStyle(
-                            color: Color(0xFFE8F5F9),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      Switch(
-                        value: isAvailable,
-                        onChanged: updatingAvailability
-                            ? null
-                            : onAvailabilityChanged,
-                        activeColor: kSuccess,
-                      ),
-                    ],
+                InfoLine(
+                  label: 'Longitude',
+                  value: lastPosition == null
+                      ? '-'
+                      : lastPosition!.longitude.toStringAsFixed(6),
+                ),
+                InfoLine(
+                  label: 'Precision',
+                  value: lastPosition == null
+                      ? '-'
+                      : '${lastPosition!.accuracy.toStringAsFixed(0)} m',
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.tonal(
+                    onPressed: () => onRequestLocation(),
+                    child: const Text('Activer ma localisation'),
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 16),
-          LocationCard(
-            stateLabel: locationState,
-            position: lastPosition,
           ),
           const SizedBox(height: 16),
           SectionCard(
@@ -818,11 +738,7 @@ class TripsPage extends StatelessWidget {
                         data: data,
                         status: status,
                         onMissionStatusChanged: (nextStatus) =>
-                            onMissionStatusChanged(
-                              tripCollection(data),
-                              doc.id,
-                              nextStatus,
-                            ),
+                            onMissionStatusChanged(doc.id, nextStatus),
                       );
                     }).toList(),
                   ),
@@ -848,7 +764,7 @@ class CommissionPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final completedMissions = missions
-        .where((doc) => isCompletedTrip(doc.data()))
+        .where((doc) => isCompletedRequest(doc.data()))
         .toList();
 
     return SingleChildScrollView(
@@ -864,7 +780,7 @@ class CommissionPage extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           MetricCard(
-            label: 'Commission 10%',
+            label: 'Commission estimee',
             value: formatMoney(estimatedCommission),
             backgroundColor: const Color(0xFF16323A),
             valueColor: Colors.white,
@@ -907,7 +823,7 @@ class CommissionPage extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           SectionCard(
-            title: 'Commissions par course',
+            title: 'Courses terminees',
             child: completedMissions.isEmpty
                 ? const Text(
                     'Aucune course terminee pour le moment.',
@@ -916,7 +832,7 @@ class CommissionPage extends StatelessWidget {
                 : Column(
                     children: completedMissions.map((doc) {
                       final data = doc.data();
-                      final amount = tripCommission(data);
+                      final amount = tripAmount(data);
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(16),
@@ -973,12 +889,14 @@ class ProfilePage extends StatelessWidget {
     required this.onLogout,
     required this.locationState,
     required this.lastPosition,
+    required this.onRequestLocation,
   });
 
   final Map<String, dynamic> driver;
   final Future<void> Function() onLogout;
   final String locationState;
   final Position? lastPosition;
+  final Future<void> Function() onRequestLocation;
 
   @override
   Widget build(BuildContext context) {
@@ -993,9 +911,40 @@ class ProfilePage extends StatelessWidget {
             eyebrow: 'Profil',
           ),
           const SizedBox(height: 16),
-          LocationCard(
-            stateLabel: locationState,
-            position: lastPosition,
+          SectionCard(
+            title: 'Localisation',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ProfileLine(label: 'Etat GPS', value: locationState),
+                ProfileLine(
+                  label: 'Latitude',
+                  value: lastPosition == null
+                      ? '-'
+                      : lastPosition!.latitude.toStringAsFixed(6),
+                ),
+                ProfileLine(
+                  label: 'Longitude',
+                  value: lastPosition == null
+                      ? '-'
+                      : lastPosition!.longitude.toStringAsFixed(6),
+                ),
+                ProfileLine(
+                  label: 'Precision',
+                  value: lastPosition == null
+                      ? '-'
+                      : '${lastPosition!.accuracy.toStringAsFixed(0)} m',
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () => onRequestLocation(),
+                    child: const Text('Demander la localisation'),
+                  ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 16),
           SectionCard(
@@ -1025,10 +974,6 @@ class ProfilePage extends StatelessWidget {
                 ProfileLine(
                   label: 'Camions',
                   value: '${driver['trucks'] ?? '-'}',
-                ),
-                ProfileLine(
-                  label: 'Disponible',
-                  value: driver['isAvailable'] == true ? 'Oui' : 'Non',
                 ),
                 ProfileLine(
                   label: 'Compte cree',
@@ -1117,231 +1062,30 @@ class HeaderCard extends StatelessWidget {
   }
 }
 
-class HeroPanel extends StatelessWidget {
-  const HeroPanel({
-    super.key,
-    required this.title,
-    required this.subtitle,
-    required this.statusText,
-    required this.statusColor,
-    required this.child,
-  });
-
-  final String title;
-  final String subtitle;
-  final String statusText;
-  final Color statusColor;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(22),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [kInk, Color(0xFF1E3A46), Color(0xFF245564)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x22000000),
-            blurRadius: 24,
-            offset: Offset(0, 12),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'POSTE CHAUFFEUR',
-                      style: TextStyle(
-                        color: Color(0xFFACD7E5),
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.1,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        color: Color(0xFFD9EEF6),
-                        height: 1.4,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: Colors.white24),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: statusColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      statusText,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-class MiniMetric extends StatelessWidget {
-  const MiniMetric({
+class StatusBadge extends StatelessWidget {
+  const StatusBadge({
     super.key,
     required this.label,
-    required this.value,
+    required this.color,
   });
 
   final String label;
-  final String value;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white12),
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
-              color: Color(0xFFB6DAE5),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 24,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class LocationCard extends StatelessWidget {
-  const LocationCard({
-    super.key,
-    required this.stateLabel,
-    required this.position,
-  });
-
-  final String stateLabel;
-  final Position? position;
-
-  @override
-  Widget build(BuildContext context) {
-    return SectionCard(
-      title: 'Localisation temps reel',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: kSky,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.gps_fixed, color: kAccent),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    stateLabel,
-                    style: const TextStyle(
-                      color: kInk,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
-          InfoLine(
-            label: 'Latitude',
-            value: position == null
-                ? '-'
-                : position!.latitude.toStringAsFixed(6),
-          ),
-          InfoLine(
-            label: 'Longitude',
-            value: position == null
-                ? '-'
-                : position!.longitude.toStringAsFixed(6),
-          ),
-          InfoLine(
-            label: 'Precision',
-            value: position == null
-                ? '-'
-                : '${position!.accuracy.toStringAsFixed(0)} m',
-          ),
-          InfoLine(
-            label: 'Vitesse',
-            value: position == null
-                ? '-'
-                : '${(position!.speed * 3.6).clamp(0, 999).toStringAsFixed(0)} km/h',
-          ),
-        ],
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
@@ -1362,13 +1106,6 @@ class SectionCard extends StatelessWidget {
         color: kPanel,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: kLine),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x12000000),
-            blurRadius: 18,
-            offset: Offset(0, 8),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1445,15 +1182,7 @@ class MissionCard extends StatelessWidget {
             value:
                 '${data['Phone'] ?? data['clientPhone'] ?? data['phone'] ?? '-'}',
           ),
-          InfoLine(
-            label: 'Montant course',
-            value: formatMoney(tripAmount(data)),
-          ),
-          InfoLine(
-            label: 'Commission 10%',
-            value: formatMoney(tripCommission(data)),
-          ),
-          InfoLine(label: 'Type', value: tripTypeLabel(data)),
+          InfoLine(label: 'Montant', value: formatMoney(tripAmount(data))),
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -1511,13 +1240,6 @@ class MetricCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: backgroundColor,
         borderRadius: BorderRadius.circular(22),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x12000000),
-            blurRadius: 16,
-            offset: Offset(0, 6),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1722,38 +1444,15 @@ bool isDriverRequest(Map<String, dynamic> data, String driverDocId) {
       '${data['chauffeur'] ?? ''}' == driverDocId;
 }
 
-bool isDriverAssuranceTrip(Map<String, dynamic> data, String driverDocId) {
-  return '${data['driverId'] ?? ''}' == driverDocId;
-}
-
-int extractSortValue(Map<String, dynamic> data) {
-  final raw =
-      data['createdAt'] ?? data['timestamp'] ?? data['requestedAt'] ?? data['date'];
-
-  if (raw is Timestamp) {
-    return raw.seconds;
-  }
-
-  if (raw is DateTime) {
-    return raw.millisecondsSinceEpoch;
-  }
-
-  if (raw is String) {
-    final parsed = DateTime.tryParse(raw);
-    if (parsed != null) {
-      return parsed.millisecondsSinceEpoch;
-    }
-  }
-
-  return 0;
+Object? extractComparableDate(Map<String, dynamic> data) {
+  return data['createdAt'] ?? data['timestamp'] ?? data['requestedAt'];
 }
 
 String requestStatus(Map<String, dynamic> data) {
   final raw = '${data['status'] ?? ''}'.trim().toLowerCase();
   final dispatch = '${data['dispatch'] ?? ''}'.trim().toLowerCase();
 
-  if (raw == 'assigned' ||
-      raw == 'accepted' ||
+  if (raw == 'accepted' ||
       raw == 'on_the_way' ||
       raw == 'arrived' ||
       raw == 'completed' ||
@@ -1761,9 +1460,6 @@ String requestStatus(Map<String, dynamic> data) {
     return raw;
   }
 
-  if (raw.contains('confirm')) return 'completed';
-  if (raw.contains('cours')) return 'assigned';
-  if (raw.contains('annul')) return 'cancelled';
   if (dispatch.contains('appel')) return 'assigned';
   if (dispatch.contains('accept')) return 'accepted';
   if (dispatch.contains('route')) return 'on_the_way';
@@ -1774,10 +1470,10 @@ String requestStatus(Map<String, dynamic> data) {
   return 'assigned';
 }
 
-bool isCompletedTrip(Map<String, dynamic> data) =>
+bool isCompletedRequest(Map<String, dynamic> data) =>
     requestStatus(data) == 'completed';
 
-bool isInProgressTrip(Map<String, dynamic> data) {
+bool isInProgressRequest(Map<String, dynamic> data) {
   final status = requestStatus(data);
   return status == 'assigned' ||
       status == 'accepted' ||
@@ -1808,30 +1504,11 @@ double tripAmount(Map<String, dynamic> data) {
   return double.tryParse('$raw'.replaceAll(',', '.')) ?? 0;
 }
 
-double tripCommission(Map<String, dynamic> data) => tripAmount(data) * 0.1;
-
 String tripTitle(Map<String, dynamic> data) {
   final title =
       '${data['motif'] ?? data['panneType'] ?? data['serviceType'] ?? 'Course'}'
           .trim();
   return title.isEmpty ? 'Course' : title;
-}
-
-String tripCollection(Map<String, dynamic> data) {
-  if (data.containsKey('numeroDossier') || data.containsKey('typePayment')) {
-    return 'assuranceTrips';
-  }
-
-  return 'requests';
-}
-
-String tripTypeLabel(Map<String, dynamic> data) {
-  if (data.containsKey('typePayment')) {
-    final typePayment = '${data['typePayment'] ?? 'assurance'}'.trim();
-    return typePayment.isEmpty ? 'assurance' : typePayment;
-  }
-
-  return 'particulier';
 }
 
 String phoneToAuthEmail(String phone) =>
