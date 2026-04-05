@@ -3,8 +3,12 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter/services.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'firebase_options.dart';
 
 const Color kBg = Color(0xFFF6F1E5);
@@ -18,10 +22,138 @@ const Color kSuccess = Color(0xFF1F7A4D);
 const Color kDanger = Color(0xFFC0392B);
 const Color kWarning = Color(0xFFD97706);
 const String kDriverAuthPassword = 'DriverTest123!';
+const String kIncomingTripAsset = 'sounds/depson.mp3';
+const AndroidNotificationChannel kTripAlertsChannel =
+    AndroidNotificationChannel(
+      'trip_alerts',
+      'Trip Alerts',
+      description: 'Alertes immediates pour les nouvelles courses chauffeur.',
+      importance: Importance.max,
+      playSound: true,
+      enableVibration: true,
+    );
+
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await DriverNotificationService.ensureInitialized();
+  await DriverNotificationService.showTripNotificationFromMessage(message);
+}
+
+class DriverNotificationService {
+  static final FlutterLocalNotificationsPlugin _notificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+  static bool _isInitialized = false;
+
+  static Future<void> ensureInitialized() async {
+    if (_isInitialized) {
+      return;
+    }
+
+    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const initSettings = InitializationSettings(android: androidSettings);
+
+    await _notificationsPlugin.initialize(initSettings);
+
+    final androidPlugin = _notificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    await androidPlugin?.createNotificationChannel(kTripAlertsChannel);
+
+    _isInitialized = true;
+  }
+
+  static Future<void> requestPermissions() async {
+    await FirebaseMessaging.instance.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    final androidPlugin = _notificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    await androidPlugin?.requestNotificationsPermission();
+  }
+
+  static bool isTripMessage(RemoteMessage message) {
+    final title = '${message.notification?.title ?? message.data['title'] ?? ''}'
+        .trim()
+        .toLowerCase();
+    final type = '${message.data['type'] ?? message.data['screen'] ?? ''}'
+        .trim()
+        .toLowerCase();
+    final collection = '${message.data['collection'] ?? ''}'
+        .trim()
+        .toLowerCase();
+
+    return title.contains('course') ||
+        title.contains('mission') ||
+        type == 'trip' ||
+        type == 'incoming_trip' ||
+        collection == 'requests';
+  }
+
+  static Future<void> showTripNotification({
+    required String title,
+    required String body,
+  }) async {
+    await ensureInitialized();
+
+    await _notificationsPlugin.show(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title,
+      body,
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          kTripAlertsChannel.id,
+          kTripAlertsChannel.name,
+          channelDescription: kTripAlertsChannel.description,
+          importance: Importance.max,
+          priority: Priority.high,
+          ticker: 'Nouvelle course',
+          playSound: true,
+          enableVibration: true,
+          sound: const RawResourceAndroidNotificationSound('depson'),
+        ),
+      ),
+    );
+  }
+
+  static Future<void> showTripNotificationFromMessage(
+    RemoteMessage message,
+  ) async {
+    if (!isTripMessage(message)) {
+      return;
+    }
+
+    final title =
+        '${message.notification?.title ?? message.data['title'] ?? 'Nouvelle course'}'
+            .trim();
+    final depart =
+        '${message.data['depart'] ?? message.data['pickupAddress'] ?? ''}'
+            .trim();
+    final destination =
+        '${message.data['destination'] ?? message.data['destinationAddress'] ?? ''}'
+            .trim();
+    final fallbackBody = [depart, destination]
+        .where((part) => part.isNotEmpty)
+        .join(' -> ');
+    final body =
+        '${message.notification?.body ?? message.data['body'] ?? (fallbackBody.isEmpty ? 'Ouvre l application pour repondre a la course.' : fallbackBody)}'
+            .trim();
+
+    await showTripNotification(title: title, body: body);
+  }
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  await DriverNotificationService.ensureInitialized();
   runApp(const DriverApp());
 }
 
@@ -40,6 +172,27 @@ class DriverApp extends StatelessWidget {
           surface: kPanel,
         ),
         scaffoldBackgroundColor: kBg,
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: kPanel,
+          indicatorColor: const Color(0xFFFFE1D6),
+          labelTextStyle: WidgetStateProperty.resolveWith((states) {
+            return TextStyle(
+              color: states.contains(WidgetState.selected)
+                  ? kPrimary
+                  : kMuted,
+              fontWeight: states.contains(WidgetState.selected)
+                  ? FontWeight.w800
+                  : FontWeight.w600,
+            );
+          }),
+        ),
+        cardTheme: CardThemeData(
+          color: kPanel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: const BorderSide(color: kLine),
+          ),
+        ),
         useMaterial3: true,
       ),
       home: const DriverGate(),
@@ -303,19 +456,39 @@ class _DriverHomeState extends State<DriverHome> {
   int _currentIndex = 0;
   bool _requestingLocation = false;
   String? _trackingDriverId;
+  String? _notificationDriverId;
   String _locationState = 'Localisation non activee';
   Position? _lastPosition;
   StreamSubscription<Position>? _positionSubscription;
+  StreamSubscription<String>? _tokenRefreshSubscription;
+  StreamSubscription<RemoteMessage>? _foregroundMessageSubscription;
+  final Set<String> _seenIncomingRequestIds = <String>{};
+  final Map<String, String> _knownRequestStatuses = <String, String>{};
+  String? _activeIncomingRequestId;
+  bool _incomingRequestsInitialized = false;
+  final AudioPlayer _ringtonePlayer = AudioPlayer();
+
+  @override
+  void initState() {
+    super.initState();
+    _foregroundMessageSubscription = FirebaseMessaging.onMessage.listen((message) {
+      DriverNotificationService.showTripNotificationFromMessage(message);
+    });
+  }
 
   @override
   void dispose() {
     _positionSubscription?.cancel();
+    _tokenRefreshSubscription?.cancel();
+    _foregroundMessageSubscription?.cancel();
+    _ringtonePlayer.dispose();
     super.dispose();
   }
 
   Future<void> _logout() async {
     await _positionSubscription?.cancel();
     _positionSubscription = null;
+    await _ringtonePlayer.stop();
     await FirebaseAuth.instance.signOut();
     widget.onLogout();
   }
@@ -356,7 +529,10 @@ class _DriverHomeState extends State<DriverHome> {
       }
 
       final current = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 5,
+        ),
       );
       await _publishDriverLocation(driverId, driver, current);
 
@@ -378,6 +554,39 @@ class _DriverHomeState extends State<DriverHome> {
     } finally {
       _requestingLocation = false;
     }
+  }
+
+  Future<void> _ensureDriverNotificationsReady(String driverId) async {
+    if (_notificationDriverId == driverId) {
+      return;
+    }
+
+    _notificationDriverId = driverId;
+    await DriverNotificationService.requestPermissions();
+    await _syncNotificationToken(driverId);
+
+    await _tokenRefreshSubscription?.cancel();
+    _tokenRefreshSubscription = FirebaseMessaging.instance.onTokenRefresh.listen((
+      token,
+    ) {
+      _saveNotificationToken(driverId, token);
+    });
+  }
+
+  Future<void> _syncNotificationToken(String driverId) async {
+    final token = await FirebaseMessaging.instance.getToken();
+    if (token == null || token.isEmpty) {
+      return;
+    }
+    await _saveNotificationToken(driverId, token);
+  }
+
+  Future<void> _saveNotificationToken(String driverId, String token) {
+    return FirebaseFirestore.instance.collection('drivers').doc(driverId).update({
+      'fcmToken': token,
+      'notificationTokens': FieldValue.arrayUnion([token]),
+      'lastNotificationTokenAt': FieldValue.serverTimestamp(),
+    });
   }
 
   Future<void> _publishDriverLocation(
@@ -414,6 +623,219 @@ class _DriverHomeState extends State<DriverHome> {
           'dispatch': requestDispatchLabel(status),
           'updatedAt': FieldValue.serverTimestamp(),
         });
+  }
+
+  void _handleIncomingRequests(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> missions,
+  ) {
+    if (!_incomingRequestsInitialized) {
+      for (final doc in missions) {
+        _seenIncomingRequestIds.add(doc.id);
+        _knownRequestStatuses[doc.id] = requestStatus(doc.data());
+      }
+      _incomingRequestsInitialized = true;
+      return;
+    }
+
+    final assignedRequests = missions.where((doc) {
+      return requestStatus(doc.data()) == 'assigned';
+    }).toList();
+
+    for (final doc in assignedRequests) {
+      if (_activeIncomingRequestId == doc.id) {
+        return;
+      }
+
+      final previousStatus = _knownRequestStatuses[doc.id];
+      final isNewRequest = !_seenIncomingRequestIds.contains(doc.id);
+      final becameAssigned = previousStatus != 'assigned';
+
+      if (isNewRequest || becameAssigned) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showIncomingTripDialog(doc);
+        });
+        return;
+      }
+    }
+
+    for (final doc in missions) {
+      _seenIncomingRequestIds.add(doc.id);
+      _knownRequestStatuses[doc.id] = requestStatus(doc.data());
+    }
+  }
+
+  Future<void> _showIncomingTripDialog(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
+    if (!mounted || _activeIncomingRequestId == doc.id) {
+      return;
+    }
+
+    _activeIncomingRequestId = doc.id;
+    final data = doc.data();
+    SystemSound.play(SystemSoundType.alert);
+    HapticFeedback.heavyImpact();
+    await _ringtonePlayer.stop();
+    await _ringtonePlayer.setReleaseMode(ReleaseMode.loop);
+    await _ringtonePlayer.play(AssetSource(kIncomingTripAsset), volume: 1);
+    if (!mounted) {
+      await _ringtonePlayer.stop();
+      _activeIncomingRequestId = null;
+      return;
+    }
+    final ringtoneTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      HapticFeedback.mediumImpact();
+    });
+
+    try {
+      await showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        barrierLabel: 'Nouvelle course',
+        pageBuilder: (context, animation, secondaryAnimation) {
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Center(
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    width: double.infinity,
+                    constraints: const BoxConstraints(maxWidth: 420),
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: kPanel,
+                      borderRadius: BorderRadius.circular(32),
+                      border: Border.all(color: kPrimary, width: 2),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x33000000),
+                          blurRadius: 28,
+                          offset: Offset(0, 18),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFE2D7),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: const Text(
+                            'Nouvelle course',
+                            style: TextStyle(
+                              color: kPrimary,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          tripTitle(data),
+                          style: const TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.w900,
+                            color: kText,
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        InfoLine(
+                          label: 'Depart',
+                          value:
+                              '${data['depart'] ?? data['pickupAddress'] ?? '-'}',
+                        ),
+                        InfoLine(
+                          label: 'Destination',
+                          value:
+                              '${data['destination'] ?? data['destinationAddress'] ?? '-'}',
+                        ),
+                        InfoLine(
+                          label: 'Client',
+                          value:
+                              '${data['Phone'] ?? data['clientPhone'] ?? data['phone'] ?? '-'}',
+                        ),
+                        InfoLine(
+                          label: 'Montant',
+                          value: formatMoney(tripAmount(data)),
+                        ),
+                        const SizedBox(height: 24),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: kDanger,
+                                  side: const BorderSide(color: kDanger),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                ),
+                                onPressed: () async {
+                                  final navigator = Navigator.of(context);
+                                  await _updateMissionStatus(doc.id, 'cancelled');
+                                  if (navigator.mounted) {
+                                    navigator.pop();
+                                  }
+                                },
+                                child: const Text('Refuser'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: FilledButton(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: kPrimary,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                ),
+                                onPressed: () async {
+                                  final navigator = Navigator.of(context);
+                                  await _updateMissionStatus(doc.id, 'accepted');
+                                  if (navigator.mounted) {
+                                    navigator.pop();
+                                  }
+                                },
+                                child: const Text('Accepter'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+        transitionBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.96, end: 1).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutBack),
+              ),
+              child: child,
+            ),
+          );
+        },
+      );
+    } finally {
+      ringtoneTimer.cancel();
+      await _ringtonePlayer.stop();
+      _activeIncomingRequestId = null;
+      _seenIncomingRequestIds.add(doc.id);
+      _knownRequestStatuses[doc.id] = requestStatus(doc.data());
+    }
   }
 
   @override
@@ -477,6 +899,7 @@ class _DriverHomeState extends State<DriverHome> {
         final driver = driverDoc.data();
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
+          _ensureDriverNotificationsReady(driverDoc.id);
           _activateLocationTracking(driverDoc.id, driver);
         });
 
@@ -509,15 +932,17 @@ class _DriverHomeState extends State<DriverHome> {
               return isInProgressRequest(doc.data());
             }).toList();
 
+            _handleIncomingRequests(missions);
+
             final paidCommissionFuture = FirebaseFirestore.instance
                 .collection('driverPayments')
                 .where('driverId', isEqualTo: driverDoc.id)
                 .where('regle', isEqualTo: true)
                 .get();
 
-            final estimatedCommission = completed.fold<double>(0, (sum, doc) {
+            final estimatedCommission = completed.fold<double>(0, (total, doc) {
               final data = doc.data();
-              return sum + tripAmount(data);
+              return total + tripAmount(data);
             });
 
             final pages = [
@@ -791,10 +1216,10 @@ class CommissionPage extends StatelessWidget {
             future: paidCommissionFuture,
             builder: (context, snapshot) {
               final paidAmount = (snapshot.data?.docs ?? []).fold<double>(0, (
-                sum,
+                total,
                 doc,
               ) {
-                return sum + ((doc.data()['amount'] ?? 0) as num).toDouble();
+                return total + ((doc.data()['amount'] ?? 0) as num).toDouble();
               });
               final remaining = (estimatedCommission - paidAmount)
                   .clamp(0, double.infinity)
@@ -1016,19 +1441,37 @@ class HeaderCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: kPanel,
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFFBF6), Color(0xFFFFEFE7)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: kLine),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x12000000),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            eyebrow,
-            style: const TextStyle(
-              color: kMuted,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1,
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              eyebrow,
+              style: const TextStyle(
+                color: kPrimary,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.8,
+              ),
             ),
           ),
           const SizedBox(height: 8),
@@ -1077,8 +1520,9 @@ class StatusBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
       ),
       child: Text(
         label,
@@ -1106,10 +1550,26 @@ class SectionCard extends StatelessWidget {
         color: kPanel,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: kLine),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0F000000),
+            blurRadius: 14,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            width: 54,
+            height: 5,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFD2C2),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(height: 12),
           Text(
             title,
             style: const TextStyle(
@@ -1144,13 +1604,33 @@ class MissionCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        gradient: const LinearGradient(
+          colors: [Colors.white, Color(0xFFFFF5EF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: kLine),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x12000000),
+            blurRadius: 12,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            width: 48,
+            height: 4,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFD0BF),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(height: 12),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1238,8 +1718,22 @@ class MetricCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: backgroundColor,
+        gradient: LinearGradient(
+          colors: [
+            backgroundColor,
+            Color.lerp(backgroundColor, Colors.white, 0.32) ?? backgroundColor,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(22),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x12000000),
+            blurRadius: 12,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1306,8 +1800,29 @@ class InfoLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text('$label: $value', style: const TextStyle(color: kText)),
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: kMuted,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(color: kText, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1324,6 +1839,10 @@ class ActionButton extends StatelessWidget {
       style: FilledButton.styleFrom(
         backgroundColor: kAccent,
         foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
       ),
       onPressed: onPressed,
       child: Text(label),
