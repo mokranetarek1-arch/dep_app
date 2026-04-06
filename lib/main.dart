@@ -11,26 +11,28 @@ import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'firebase_options.dart';
 
-const Color kBg = Color(0xFFF6F1E5);
-const Color kPanel = Color(0xFFFFFCF6);
-const Color kPrimary = Color(0xFFD9481B);
-const Color kLine = Color(0xFFE7DCC6);
-const Color kText = Color(0xFF1E1E1F);
-const Color kMuted = Color(0xFF6C6C70);
-const Color kAccent = Color(0xFF0E7490);
-const Color kSuccess = Color(0xFF1F7A4D);
+const Color kBg = Color(0xFFF4F7FF);
+const Color kPanel = Color(0xFFFFFFFF);
+const Color kPrimary = Color(0xFF1D4ED8);
+const Color kLine = Color(0xFFDCE5FF);
+const Color kText = Color(0xFF0F172A);
+const Color kMuted = Color(0xFF64748B);
+const Color kAccent = Color(0xFF2563EB);
+const Color kSuccess = Color(0xFF0F9D58);
 const Color kDanger = Color(0xFFC0392B);
 const Color kWarning = Color(0xFFD97706);
 const String kDriverAuthPassword = 'DriverTest123!';
 const String kIncomingTripAsset = 'sounds/depson.mp3';
+const String kNotificationVisual = 'iconap';
 const AndroidNotificationChannel kTripAlertsChannel =
     AndroidNotificationChannel(
-      'trip_alerts',
-      'Trip Alerts',
+      'trip_alerts_depson',
+      'Trip Alerts Depson',
       description: 'Alertes immediates pour les nouvelles courses chauffeur.',
       importance: Importance.max,
       playSound: true,
       enableVibration: true,
+      sound: RawResourceAndroidNotificationSound('depson'),
     );
 
 @pragma('vm:entry-point')
@@ -99,6 +101,7 @@ class DriverNotificationService {
   static Future<void> showTripNotification({
     required String title,
     required String body,
+    String? bigText,
   }) async {
     await ensureInitialized();
 
@@ -117,6 +120,16 @@ class DriverNotificationService {
           playSound: true,
           enableVibration: true,
           sound: const RawResourceAndroidNotificationSound('depson'),
+          color: kPrimary,
+          largeIcon: const DrawableResourceAndroidBitmap(kNotificationVisual),
+          styleInformation: BigPictureStyleInformation(
+            const DrawableResourceAndroidBitmap(kNotificationVisual),
+            largeIcon: const DrawableResourceAndroidBitmap(kNotificationVisual),
+            contentTitle: title,
+            summaryText: body,
+            htmlFormatContentTitle: false,
+            htmlFormatSummaryText: false,
+          ),
         ),
       ),
     );
@@ -129,8 +142,22 @@ class DriverNotificationService {
       return;
     }
 
+    final details = tripNotificationDetails(message);
+    final body = details['body']!;
+
+    await showTripNotification(
+      title: details['title']!,
+      body: body,
+      bigText: details['bigText'],
+    );
+  }
+
+  static Map<String, String> tripNotificationDetails(RemoteMessage message) {
+    final tripLabel =
+        '${message.data['motif'] ?? message.data['panneType'] ?? message.data['serviceType'] ?? ''}'
+            .trim();
     final title =
-        '${message.notification?.title ?? message.data['title'] ?? 'Nouvelle course'}'
+        '${message.notification?.title ?? message.data['title'] ?? (tripLabel.isEmpty ? 'Nouvelle course' : tripLabel)}'
             .trim();
     final depart =
         '${message.data['depart'] ?? message.data['pickupAddress'] ?? ''}'
@@ -138,14 +165,39 @@ class DriverNotificationService {
     final destination =
         '${message.data['destination'] ?? message.data['destinationAddress'] ?? ''}'
             .trim();
-    final fallbackBody = [depart, destination]
+    final client =
+        '${message.data['Phone'] ?? message.data['clientPhone'] ?? message.data['phone'] ?? ''}'
+            .trim();
+    final amount =
+        '${message.data['prix'] ?? message.data['price'] ?? message.data['amount'] ?? message.data['fare'] ?? message.data['total'] ?? ''}'
+            .trim();
+    final route = [depart, destination]
         .where((part) => part.isNotEmpty)
         .join(' -> ');
-    final body =
-        '${message.notification?.body ?? message.data['body'] ?? (fallbackBody.isEmpty ? 'Ouvre l application pour repondre a la course.' : fallbackBody)}'
-            .trim();
+    final fallbackParts = <String>[
+      if (route.isNotEmpty) route,
+      if (client.isNotEmpty) 'Client: $client',
+      if (amount.isNotEmpty) 'Montant: $amount DA',
+    ];
+    final incomingBody =
+        '${message.notification?.body ?? message.data['body'] ?? ''}'.trim();
+    final bodyParts = {
+      if (incomingBody.isNotEmpty) incomingBody,
+      ...fallbackParts,
+    }.toList();
+    final body = bodyParts.isEmpty
+        ? 'Ouvre l application pour repondre a la course.'
+        : bodyParts.join(' | ');
 
-    await showTripNotification(title: title, body: body);
+    return {
+      'title': title,
+      'body': body,
+      'bigText': bodyParts.isEmpty ? body : bodyParts.join('\n'),
+      'route': route,
+      'client': client,
+      'amount': amount.isEmpty ? '' : '$amount DA',
+      'motif': tripLabel,
+    };
   }
 }
 
@@ -174,7 +226,7 @@ class DriverApp extends StatelessWidget {
         scaffoldBackgroundColor: kBg,
         navigationBarTheme: NavigationBarThemeData(
           backgroundColor: kPanel,
-          indicatorColor: const Color(0xFFFFE1D6),
+          indicatorColor: const Color(0xFFDCE5FF),
           labelTextStyle: WidgetStateProperty.resolveWith((states) {
             return TextStyle(
               color: states.contains(WidgetState.selected)
@@ -239,13 +291,24 @@ class AuthScreen extends StatefulWidget {
 
 class _AuthScreenState extends State<AuthScreen> {
   final _loginPhoneController = TextEditingController();
+  final _signupFirstNameController = TextEditingController();
+  final _signupLastNameController = TextEditingController();
+  final _signupPhoneController = TextEditingController();
+  final _signupWilayaController = TextEditingController();
+  final _signupRegionController = TextEditingController();
 
   bool _busy = false;
   String _message = '';
+  bool _signupMode = false;
 
   @override
   void dispose() {
     _loginPhoneController.dispose();
+    _signupFirstNameController.dispose();
+    _signupLastNameController.dispose();
+    _signupPhoneController.dispose();
+    _signupWilayaController.dispose();
+    _signupRegionController.dispose();
     super.dispose();
   }
 
@@ -316,6 +379,103 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  Future<void> _submitSignupRequest() async {
+    final firstName = _signupFirstNameController.text.trim();
+    final lastName = _signupLastNameController.text.trim();
+    final phone = normalizePhone(_signupPhoneController.text);
+    final wilaya = _signupWilayaController.text.trim();
+    final region = _signupRegionController.text.trim();
+
+    if (firstName.isEmpty ||
+        lastName.isEmpty ||
+        phone.isEmpty ||
+        wilaya.isEmpty ||
+        region.isEmpty) {
+      setState(() {
+        _message =
+            'Remplis nom, prenom, numero, wilaya et region pour envoyer la demande.';
+      });
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      _message = '';
+    });
+
+    try {
+      final driversQuery = await FirebaseFirestore.instance
+          .collection('drivers')
+          .get();
+
+      final alreadyExists = driversQuery.docs.any((doc) {
+        final driverPhone = normalizePhone('${doc.data()['phone'] ?? ''}');
+        return phonesMatch(phone, driverPhone);
+      });
+
+      if (alreadyExists) {
+        setState(() {
+          _message =
+              'Ce numero existe deja dans les chauffeurs. Connecte-toi directement avec ce numero.';
+        });
+        return;
+      }
+
+      final pendingQuery = await FirebaseFirestore.instance
+          .collection('driver_signup_requests')
+          .get();
+
+      final hasPendingRequest = pendingQuery.docs.any((doc) {
+        final data = doc.data();
+        final pendingPhone = normalizePhone('${data['phone'] ?? ''}');
+        final pendingStatus = '${data['status'] ?? ''}'.trim().toLowerCase();
+        return phonesMatch(phone, pendingPhone) &&
+            (pendingStatus.isEmpty || pendingStatus == 'pending');
+      });
+
+      if (hasPendingRequest) {
+        setState(() {
+          _message =
+              'Une demande existe deja pour ce numero. Attends la validation depuis le dashboard.';
+        });
+        return;
+      }
+
+      await FirebaseFirestore.instance.collection('driver_signup_requests').add({
+        'firstName': firstName,
+        'lastName': lastName,
+        'phone': phone,
+        'wilaya': wilaya,
+        'region': region,
+        'status': 'pending',
+        'role': 'driver',
+        'requestedAt': FieldValue.serverTimestamp(),
+        'authEmail': phoneToAuthEmail(phone),
+      });
+
+      _signupFirstNameController.clear();
+      _signupLastNameController.clear();
+      _signupPhoneController.clear();
+      _signupWilayaController.clear();
+      _signupRegionController.clear();
+
+      setState(() {
+        _signupMode = false;
+        _loginPhoneController.text = phone;
+        _message =
+            'Demande envoyee. Quand le dashboard accepte, le compte Auth ${phoneToAuthEmail(phone)} peut etre cree puis tu te connectes avec ton numero.';
+      });
+    } catch (_) {
+      setState(() {
+        _message = 'Impossible d envoyer la demande pour le moment. Reessaie.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -337,7 +497,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     Text(
                       'CRMDEP Driver',
                       style: TextStyle(
-                        color: Color(0xFFFFE1D6),
+                        color: Color(0xFFE5E7EB),
                         fontSize: 13,
                         fontWeight: FontWeight.w700,
                         letterSpacing: 1.1,
@@ -347,7 +507,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     Text(
                       'Espace chauffeur assistance routiere',
                       style: TextStyle(
-                        color: Color(0xFFFFF8F3),
+                        color: Colors.white,
                         fontSize: 30,
                         height: 1.15,
                         fontWeight: FontWeight.w800,
@@ -355,9 +515,9 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                     SizedBox(height: 12),
                     Text(
-                      'Connexion temporaire par numero uniquement pour afficher directement les comptes chauffeurs deja ajoutes.',
+                      'Connexion par numero apres validation dashboard, ou envoie de demande d inscription chauffeur.',
                       style: TextStyle(
-                        color: Color(0xFFFFEEE7),
+                        color: Color(0xFFD1D5DB),
                         fontSize: 15,
                         height: 1.45,
                       ),
@@ -376,40 +536,175 @@ class _AuthScreenState extends State<AuthScreen> {
                 ),
                 child: Column(
                   children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF3F4F6),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: _busy
+                                  ? null
+                                  : () => setState(() => _signupMode = false),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 180),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                                decoration: BoxDecoration(
+                                  color: !_signupMode
+                                      ? Colors.white
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(16),
+                                  boxShadow: !_signupMode
+                                      ? const [
+                                          BoxShadow(
+                                            color: Color(0x12000000),
+                                            blurRadius: 12,
+                                            offset: Offset(0, 6),
+                                          ),
+                                        ]
+                                      : null,
+                                ),
+                                child: Text(
+                                  'Connexion',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color:
+                                        !_signupMode ? kText : kMuted,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: _busy
+                                  ? null
+                                  : () => setState(() => _signupMode = true),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 180),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                                decoration: BoxDecoration(
+                                  color: _signupMode
+                                      ? Colors.white
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(16),
+                                  boxShadow: _signupMode
+                                      ? const [
+                                          BoxShadow(
+                                            color: Color(0x12000000),
+                                            blurRadius: 12,
+                                            offset: Offset(0, 6),
+                                          ),
+                                        ]
+                                      : null,
+                                ),
+                                child: Text(
+                                  'Inscription',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: _signupMode ? kText : kMuted,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
                     Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        'Connexion chauffeur',
+                        _signupMode
+                            ? 'Demande d inscription chauffeur'
+                            : 'Connexion chauffeur',
                         style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
                           color: kText,
                         ),
                       ),
                     ),
                     const SizedBox(height: 16),
-                    DriverTextField(
-                      controller: _loginPhoneController,
-                      label: 'Numero de telephone',
-                      hint: '0552466823',
-                    ),
-                    const SizedBox(height: 10),
-                    const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Mode test temporaire: entre seulement le numero du chauffeur deja present dans drivers.',
-                        style: TextStyle(color: kMuted, height: 1.45),
+                    if (_signupMode) ...[
+                      DriverTextField(
+                        controller: _signupFirstNameController,
+                        label: 'Prenom',
+                        hint: 'Tarek',
                       ),
-                    ),
-                    if (_message.isNotEmpty) ...[
-                      const SizedBox(height: 14),
-                      Align(
+                      const SizedBox(height: 12),
+                      DriverTextField(
+                        controller: _signupLastNameController,
+                        label: 'Nom',
+                        hint: 'Aloui',
+                      ),
+                      const SizedBox(height: 12),
+                      DriverTextField(
+                        controller: _signupPhoneController,
+                        label: 'Numero de telephone',
+                        hint: '0552466823',
+                      ),
+                      const SizedBox(height: 12),
+                      DriverTextField(
+                        controller: _signupWilayaController,
+                        label: 'Wilaya',
+                        hint: 'Alger',
+                      ),
+                      const SizedBox(height: 12),
+                      DriverTextField(
+                        controller: _signupRegionController,
+                        label: 'Region',
+                        hint: 'Est',
+                      ),
+                      const SizedBox(height: 10),
+                      const Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          _message,
+                          'Le dashboard recoit la demande, puis apres validation il cree automatiquement le compte Auth au format numero@driver.crmdep.',
                           style: TextStyle(
-                            color: kDanger,
-                            fontWeight: FontWeight.w600,
+                            color: kMuted,
+                            height: 1.45,
+                          ),
+                        ),
+                      ),
+                    ] else ...[
+                      DriverTextField(
+                        controller: _loginPhoneController,
+                        label: 'Numero de telephone',
+                        hint: '0552466823',
+                      ),
+                      const SizedBox(height: 10),
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Entre ton numero. Une fois la demande approuvee et le compte active, l app ouvre directement ton espace chauffeur.',
+                          style: TextStyle(color: kMuted, height: 1.45),
+                        ),
+                      ),
+                    ],
+                    if (_message.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: kLine),
+                        ),
+                        child: Text(
+                          _message,
+                          style: const TextStyle(
+                            color: kText,
+                            fontWeight: FontWeight.w700,
+                            height: 1.4,
                           ),
                         ),
                       ),
@@ -423,8 +718,15 @@ class _AuthScreenState extends State<AuthScreen> {
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                         ),
-                        onPressed: _busy ? null : _login,
-                        child: Text(_busy ? 'Veuillez patienter...' : 'Entrer'),
+                        onPressed:
+                            _busy ? null : (_signupMode ? _submitSignupRequest : _login),
+                        child: Text(
+                          _busy
+                              ? 'Veuillez patienter...'
+                              : (_signupMode
+                                  ? 'Envoyer ma demande'
+                                  : 'Entrer'),
+                        ),
                       ),
                     ),
                   ],
@@ -452,18 +754,20 @@ class DriverHome extends StatefulWidget {
   State<DriverHome> createState() => _DriverHomeState();
 }
 
-class _DriverHomeState extends State<DriverHome> {
+class _DriverHomeState extends State<DriverHome> with WidgetsBindingObserver {
   int _currentIndex = 0;
   bool _requestingLocation = false;
   String? _trackingDriverId;
   String? _notificationDriverId;
   String _locationState = 'Localisation non activee';
+  AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
   Position? _lastPosition;
   StreamSubscription<Position>? _positionSubscription;
   StreamSubscription<String>? _tokenRefreshSubscription;
   StreamSubscription<RemoteMessage>? _foregroundMessageSubscription;
   final Set<String> _seenIncomingRequestIds = <String>{};
   final Map<String, String> _knownRequestStatuses = <String, String>{};
+  Map<String, String>? _inAppAlert;
   String? _activeIncomingRequestId;
   bool _incomingRequestsInitialized = false;
   final AudioPlayer _ringtonePlayer = AudioPlayer();
@@ -471,13 +775,32 @@ class _DriverHomeState extends State<DriverHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _foregroundMessageSubscription = FirebaseMessaging.onMessage.listen((message) {
       DriverNotificationService.showTripNotificationFromMessage(message);
+      if (DriverNotificationService.isTripMessage(message) && mounted) {
+        setState(() {
+          _inAppAlert = DriverNotificationService.tripNotificationDetails(
+            message,
+          );
+        });
+      }
     });
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      _ringtonePlayer.stop();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _positionSubscription?.cancel();
     _tokenRefreshSubscription?.cancel();
     _foregroundMessageSubscription?.cancel();
@@ -491,6 +814,11 @@ class _DriverHomeState extends State<DriverHome> {
     await _ringtonePlayer.stop();
     await FirebaseAuth.instance.signOut();
     widget.onLogout();
+  }
+
+  void _dismissInAppAlert() {
+    if (!mounted) return;
+    setState(() => _inAppAlert = null);
   }
 
   Future<void> _activateLocationTracking(
@@ -628,6 +956,14 @@ class _DriverHomeState extends State<DriverHome> {
   void _handleIncomingRequests(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> missions,
   ) {
+    if (_appLifecycleState != AppLifecycleState.resumed) {
+      for (final doc in missions) {
+        _seenIncomingRequestIds.add(doc.id);
+        _knownRequestStatuses[doc.id] = requestStatus(doc.data());
+      }
+      return;
+    }
+
     if (!_incomingRequestsInitialized) {
       for (final doc in missions) {
         _seenIncomingRequestIds.add(doc.id);
@@ -725,7 +1061,7 @@ class _DriverHomeState extends State<DriverHome> {
                             vertical: 8,
                           ),
                           decoration: BoxDecoration(
-                            color: const Color(0xFFFFE2D7),
+                            color: const Color(0xFFE5E7EB),
                             borderRadius: BorderRadius.circular(999),
                           ),
                           child: const Text(
@@ -952,11 +1288,15 @@ class _DriverHomeState extends State<DriverHome> {
                 completedCount: completed.length,
                 locationState: _locationState,
                 lastPosition: _lastPosition,
+                inAppAlert: _inAppAlert,
+                onDismissAlert: _dismissInAppAlert,
+                onOpenAlerts: () => setState(() => _currentIndex = 1),
                 onRequestLocation: () =>
                     _activateLocationTracking(driverDoc.id, driver),
                 missions: missions,
                 onMissionStatusChanged: _updateMissionStatus,
               ),
+              AlertsPage(missions: missions),
               CommissionPage(
                 missions: missions,
                 estimatedCommission: estimatedCommission,
@@ -983,6 +1323,11 @@ class _DriverHomeState extends State<DriverHome> {
                     icon: Icon(Icons.local_shipping_outlined),
                     selectedIcon: Icon(Icons.local_shipping),
                     label: 'Courses',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.notifications_none_outlined),
+                    selectedIcon: Icon(Icons.notifications),
+                    label: 'Alertes',
                   ),
                   NavigationDestination(
                     icon: Icon(Icons.payments_outlined),
@@ -1063,6 +1408,9 @@ class TripsPage extends StatelessWidget {
     required this.completedCount,
     required this.locationState,
     required this.lastPosition,
+    required this.inAppAlert,
+    required this.onDismissAlert,
+    required this.onOpenAlerts,
     required this.onRequestLocation,
     required this.missions,
     required this.onMissionStatusChanged,
@@ -1073,6 +1421,9 @@ class TripsPage extends StatelessWidget {
   final int completedCount;
   final String locationState;
   final Position? lastPosition;
+  final Map<String, String>? inAppAlert;
+  final VoidCallback onDismissAlert;
+  final VoidCallback onOpenAlerts;
   final Future<void> Function() onRequestLocation;
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> missions;
   final Future<void> Function(String missionId, String status)
@@ -1080,94 +1431,216 @@ class TripsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final assignedTrips = missions
+        .where((doc) => requestStatus(doc.data()) == 'assigned')
+        .toList();
+
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DriverHeroCard(
+                  name: '${driver['firstName'] ?? ''} ${driver['lastName'] ?? ''}'
+                      .trim(),
+                  phone: '${driver['phone'] ?? '-'}',
+                  city: '${driver['wilaya'] ?? '-'}',
+                  inProgressCount: inProgressCount,
+                  completedCount: completedCount,
+                  locationState: locationState,
+                ),
+                const SizedBox(height: 16),
+                if (inAppAlert != null) ...[
+                  InAppTripAlertCard(
+                    alert: inAppAlert!,
+                    onDismiss: onDismissAlert,
+                    onOpenAlerts: onOpenAlerts,
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: StatTile(
+                        label: 'En attente',
+                        value: '${assignedTrips.length}',
+                        icon: Icons.notifications_active_outlined,
+                        accent: const Color(0xFF2563EB),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: StatTile(
+                        label: 'En mission',
+                        value: '$inProgressCount',
+                        icon: Icons.route_outlined,
+                        accent: const Color(0xFF111827),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: StatTile(
+                        label: 'Terminees',
+                        value: '$completedCount',
+                        icon: Icons.check_circle_outline,
+                        accent: const Color(0xFF60A5FA),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                SectionCard(
+                  title: 'Live status',
+                  subtitle: 'Position chauffeur et disponibilite du GPS.',
+                  child: Column(
+                    children: [
+                      InfoLine(label: 'Etat GPS', value: locationState),
+                      InfoLine(
+                        label: 'Latitude',
+                        value: lastPosition == null
+                            ? '-'
+                            : lastPosition!.latitude.toStringAsFixed(6),
+                      ),
+                      InfoLine(
+                        label: 'Longitude',
+                        value: lastPosition == null
+                            ? '-'
+                            : lastPosition!.longitude.toStringAsFixed(6),
+                      ),
+                      InfoLine(
+                        label: 'Precision',
+                        value: lastPosition == null
+                            ? '-'
+                            : '${lastPosition!.accuracy.toStringAsFixed(0)} m',
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: () => onRequestLocation(),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: kPrimary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          child: const Text('Actualiser ma position'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const SectionHeader(
+                  eyebrow: 'Courses',
+                  title: 'Demandes et trajets',
+                  subtitle:
+                      'Les nouvelles demandes arrivent ici avec les actions chauffeur.',
+                ),
+                const SizedBox(height: 14),
+              ],
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          sliver: missions.isEmpty
+              ? const SliverToBoxAdapter(
+                  child: EmptyStateCard(
+                    title: 'Aucune course pour le moment',
+                    subtitle:
+                        'Les nouvelles demandes affectees au chauffeur apparaitront ici en temps reel.',
+                    icon: Icons.local_shipping_outlined,
+                  ),
+                )
+              : SliverList.separated(
+                  itemCount: missions.length,
+                  itemBuilder: (context, index) {
+                    final doc = missions[index];
+                    final data = doc.data();
+                    final status = requestStatus(data);
+                    return MissionCard(
+                      data: data,
+                      status: status,
+                      onMissionStatusChanged: (nextStatus) =>
+                          onMissionStatusChanged(doc.id, nextStatus),
+                    );
+                  },
+                  separatorBuilder: (context, index) =>
+                      const SizedBox(height: 14),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class AlertsPage extends StatelessWidget {
+  const AlertsPage({
+    super.key,
+    required this.missions,
+  });
+
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> missions;
+
+  @override
+  Widget build(BuildContext context) {
+    final recentAlerts = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
+      missions,
+    )..sort((a, b) {
+        final left = extractComparableDate(b.data());
+        final right = extractComparableDate(a.data());
+        final leftSeconds = left is Timestamp ? left.seconds : 0;
+        final rightSeconds = right is Timestamp ? right.seconds : 0;
+        return leftSeconds.compareTo(rightSeconds);
+      });
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          HeaderCard(
-            title: '${driver['firstName'] ?? ''} ${driver['lastName'] ?? ''}'
-                .trim(),
-            subtitle: '${driver['phone'] ?? '-'} | ${driver['wilaya'] ?? '-'}',
-            eyebrow: 'Chauffeur connecte',
-            trailing: const StatusBadge(
-              label: 'GPS suivi',
-              color: kAccent,
+          const HeaderCard(
+            title: 'Alertes & historique',
+            subtitle:
+                'Les demandes recues restent visibles ici avec leurs details et statuts.',
+            eyebrow: 'Activity',
+            trailing: StatusBadge(
+              label: 'Temps reel',
+              color: Color(0xFF2563EB),
             ),
           ),
-          const SizedBox(height: 16),
-          MetricCard(
-            label: 'Courses en cours',
-            value: inProgressCount.toString(),
-            backgroundColor: const Color(0xFFFFD8C9),
-            valueColor: kText,
-            labelColor: kMuted,
-          ),
-          const SizedBox(height: 12),
-          MetricCard(
-            label: 'Courses terminees',
-            value: completedCount.toString(),
-            backgroundColor: const Color(0xFFD7F4E3),
-            valueColor: kText,
-            labelColor: kMuted,
-          ),
-          const SizedBox(height: 16),
-          SectionCard(
-            title: 'Localisation',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                InfoLine(label: 'Etat GPS', value: locationState),
-                InfoLine(
-                  label: 'Latitude',
-                  value: lastPosition == null
-                      ? '-'
-                      : lastPosition!.latitude.toStringAsFixed(6),
-                ),
-                InfoLine(
-                  label: 'Longitude',
-                  value: lastPosition == null
-                      ? '-'
-                      : lastPosition!.longitude.toStringAsFixed(6),
-                ),
-                InfoLine(
-                  label: 'Precision',
-                  value: lastPosition == null
-                      ? '-'
-                      : '${lastPosition!.accuracy.toStringAsFixed(0)} m',
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.tonal(
-                    onPressed: () => onRequestLocation(),
-                    child: const Text('Activer ma localisation'),
-                  ),
-                ),
-              ],
+          const SizedBox(height: 18),
+          if (recentAlerts.isNotEmpty)
+            const QuickFiltersBar(
+              labels: ['Toutes', 'Affectees', 'Actives', 'Terminees'],
             ),
-          ),
-          const SizedBox(height: 16),
-          SectionCard(
-            title: 'Mes courses',
-            child: missions.isEmpty
-                ? const Text(
-                    'Aucune course pour le moment.',
-                    style: TextStyle(color: kMuted),
-                  )
-                : Column(
-                    children: missions.map((doc) {
-                      final data = doc.data();
-                      final status = requestStatus(data);
-                      return MissionCard(
-                        data: data,
-                        status: status,
-                        onMissionStatusChanged: (nextStatus) =>
-                            onMissionStatusChanged(doc.id, nextStatus),
-                      );
-                    }).toList(),
-                  ),
-          ),
+          const SizedBox(height: 18),
+          if (recentAlerts.isEmpty)
+            const EmptyStateCard(
+              title: 'Aucune alerte pour le moment',
+              subtitle:
+                  'Quand une nouvelle course est affectee, elle apparaitra ici avec ses details.',
+              icon: Icons.notifications_none_outlined,
+            )
+          else
+            ...recentAlerts.take(15).map((doc) {
+              final data = doc.data();
+              final route =
+                  '${data['depart'] ?? data['pickupAddress'] ?? '-'} -> ${data['destination'] ?? data['destinationAddress'] ?? '-'}';
+              final client =
+                  '${data['Phone'] ?? data['clientPhone'] ?? data['phone'] ?? '-'}';
+              final amount = formatMoney(tripAmount(data));
+              return AlertHistoryCard(
+                title: tripTitle(data),
+                route: route,
+                client: client,
+                amount: amount,
+                status: requestStatus(data),
+              );
+            }),
         ],
       ),
     );
@@ -1197,106 +1670,66 @@ class CommissionPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const HeaderCard(
-            title: 'Commission chauffeur',
-            subtitle:
-                'Vue simple sur les montants generes et les paiements valides.',
-            eyebrow: 'Finance',
-          ),
-          const SizedBox(height: 16),
-          MetricCard(
-            label: 'Commission estimee',
-            value: formatMoney(estimatedCommission),
-            backgroundColor: const Color(0xFF16323A),
-            valueColor: Colors.white,
-            labelColor: const Color(0xFFABD8E4),
-          ),
-          const SizedBox(height: 12),
+          EarningsHeroCard(amount: formatMoney(estimatedCommission)),
+          const SizedBox(height: 18),
           FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
             future: paidCommissionFuture,
             builder: (context, snapshot) {
-              final paidAmount = (snapshot.data?.docs ?? []).fold<double>(0, (
-                total,
-                doc,
-              ) {
-                return total + ((doc.data()['amount'] ?? 0) as num).toDouble();
-              });
+              final paidAmount = (snapshot.data?.docs ?? []).fold<double>(
+                0,
+                (total, doc) =>
+                    total + ((doc.data()['amount'] ?? 0) as num).toDouble(),
+              );
               final remaining = (estimatedCommission - paidAmount)
                   .clamp(0, double.infinity)
                   .toDouble();
 
-              return Column(
+              return Row(
                 children: [
-                  MetricCard(
-                    label: 'Montant traite',
-                    value: formatMoney(paidAmount),
-                    backgroundColor: const Color(0xFFD7F4E3),
-                    valueColor: kText,
-                    labelColor: kMuted,
+                  Expanded(
+                    child: MetricCard(
+                      label: 'Traite',
+                      value: formatMoney(paidAmount),
+                      backgroundColor: const Color(0xFFDBEAFE),
+                      valueColor: kText,
+                      labelColor: kMuted,
+                    ),
                   ),
-                  const SizedBox(height: 12),
-                  MetricCard(
-                    label: 'Reste estime',
-                    value: formatMoney(remaining),
-                    backgroundColor: const Color(0xFFF8DDD8),
-                    valueColor: kText,
-                    labelColor: kMuted,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: MetricCard(
+                      label: 'Reste',
+                      value: formatMoney(remaining),
+                      backgroundColor: const Color(0xFFE0E7FF),
+                      valueColor: kText,
+                      labelColor: kMuted,
+                    ),
                   ),
                 ],
               );
             },
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           SectionCard(
             title: 'Courses terminees',
+            subtitle:
+                'Base de calcul actuelle des commissions et paiements chauffeur.',
             child: completedMissions.isEmpty
-                ? const Text(
-                    'Aucune course terminee pour le moment.',
-                    style: TextStyle(color: kMuted),
+                ? const EmptyStateCard(
+                    title: 'Aucune course terminee',
+                    subtitle:
+                        'Les commissions s afficheront ici a partir des trajets finalises.',
+                    icon: Icons.payments_outlined,
                   )
                 : Column(
                     children: completedMissions.map((doc) {
                       final data = doc.data();
                       final amount = tripAmount(data);
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: kLine),
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    tripTitle(data),
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w800,
-                                      color: kText,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${data['depart'] ?? data['pickupAddress'] ?? '-'} -> ${data['destination'] ?? data['destinationAddress'] ?? '-'}',
-                                    style: const TextStyle(color: kMuted),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Text(
-                              formatMoney(amount),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                                color: kPrimary,
-                              ),
-                            ),
-                          ],
-                        ),
+                      return CompactEarningRow(
+                        title: tripTitle(data),
+                        route:
+                            '${data['depart'] ?? data['pickupAddress'] ?? '-'} -> ${data['destination'] ?? data['destinationAddress'] ?? '-'}',
+                        amount: formatMoney(amount),
                       );
                     }).toList(),
                   ),
@@ -1330,50 +1763,16 @@ class ProfilePage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const HeaderCard(
-            title: 'Mon profil',
-            subtitle: 'Informations du chauffeur et etat du compte mobile.',
-            eyebrow: 'Profil',
+          ProfileHeroCard(
+            name:
+                '${driver['firstName'] ?? ''} ${driver['lastName'] ?? ''}'.trim(),
+            phone: '${driver['phone'] ?? '-'}',
+            region: '${driver['wilaya'] ?? '-'} • ${driver['region'] ?? '-'}',
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           SectionCard(
-            title: 'Localisation',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ProfileLine(label: 'Etat GPS', value: locationState),
-                ProfileLine(
-                  label: 'Latitude',
-                  value: lastPosition == null
-                      ? '-'
-                      : lastPosition!.latitude.toStringAsFixed(6),
-                ),
-                ProfileLine(
-                  label: 'Longitude',
-                  value: lastPosition == null
-                      ? '-'
-                      : lastPosition!.longitude.toStringAsFixed(6),
-                ),
-                ProfileLine(
-                  label: 'Precision',
-                  value: lastPosition == null
-                      ? '-'
-                      : '${lastPosition!.accuracy.toStringAsFixed(0)} m',
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: () => onRequestLocation(),
-                    child: const Text('Demander la localisation'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          SectionCard(
-            title: 'Informations',
+            title: 'Identite chauffeur',
+            subtitle: 'Informations de compte visibles dans le dashboard.',
             child: Column(
               children: [
                 ProfileLine(
@@ -1401,19 +1800,835 @@ class ProfilePage extends StatelessWidget {
                   value: '${driver['trucks'] ?? '-'}',
                 ),
                 ProfileLine(
-                  label: 'Compte cree',
-                  value: driver['accountCreated'] == true ? 'Oui' : 'Non',
+                  label: 'Compte mobile',
+                  value: driver['accountCreated'] == true ? 'Actif' : 'A finaliser',
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
+          SectionCard(
+            title: 'Localisation',
+            subtitle: 'Etat de la position temps reel du chauffeur.',
+            child: Column(
+              children: [
+                ProfileLine(label: 'Etat GPS', value: locationState),
+                ProfileLine(
+                  label: 'Latitude',
+                  value: lastPosition == null
+                      ? '-'
+                      : lastPosition!.latitude.toStringAsFixed(6),
+                ),
+                ProfileLine(
+                  label: 'Longitude',
+                  value: lastPosition == null
+                      ? '-'
+                      : lastPosition!.longitude.toStringAsFixed(6),
+                ),
+                ProfileLine(
+                  label: 'Precision',
+                  value: lastPosition == null
+                      ? '-'
+                      : '${lastPosition!.accuracy.toStringAsFixed(0)} m',
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () => onRequestLocation(),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: kPrimary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    child: const Text('Synchroniser ma localisation'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
             child: FilledButton.tonal(
               onPressed: onLogout,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
               child: const Text('Se deconnecter'),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class DriverHeroCard extends StatelessWidget {
+  const DriverHeroCard({
+    super.key,
+    required this.name,
+    required this.phone,
+    required this.city,
+    required this.inProgressCount,
+    required this.completedCount,
+    required this.locationState,
+  });
+
+  final String name;
+  final String phone;
+  final String city;
+  final int inProgressCount;
+  final int completedCount;
+  final String locationState;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF0B1220), Color(0xFF111827)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(32),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x24000000),
+            blurRadius: 26,
+            offset: Offset(0, 18),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 60,
+                height: 60,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Icon(
+                  Icons.local_taxi_rounded,
+                  color: Colors.white,
+                  size: 30,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name.isEmpty ? 'Chauffeur' : name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 26,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$phone • $city',
+                      style: const TextStyle(
+                        color: Color(0xFFCBD5E1),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const StatusBadge(
+                label: 'ON DUTY',
+                color: Color(0xFF60A5FA),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: HeroMetric(
+                    label: 'En mission',
+                    value: '$inProgressCount',
+                  ),
+                ),
+                const HeroDivider(),
+                Expanded(
+                  child: HeroMetric(
+                    label: 'Terminees',
+                    value: '$completedCount',
+                  ),
+                ),
+                const HeroDivider(),
+                Expanded(
+                  child: HeroMetric(
+                    label: 'GPS',
+                    value: locationState.contains('GPS actif') ? 'ACTIF' : 'CHECK',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class HeroMetric extends StatelessWidget {
+  const HeroMetric({super.key, required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 24,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 0.4,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF94A3B8),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class HeroDivider extends StatelessWidget {
+  const HeroDivider({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 1,
+      height: 42,
+      color: Colors.white.withValues(alpha: 0.08),
+    );
+  }
+}
+
+class InAppTripAlertCard extends StatelessWidget {
+  const InAppTripAlertCard({
+    super.key,
+    required this.alert,
+    required this.onDismiss,
+    required this.onOpenAlerts,
+  });
+
+  final Map<String, String> alert;
+  final VoidCallback onDismiss;
+  final VoidCallback onOpenAlerts;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF2563EB), Color(0xFF1D4ED8)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x242563EB),
+            blurRadius: 22,
+            offset: Offset(0, 16),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Nouvelle course',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: onDismiss,
+                icon: const Icon(Icons.close, color: Colors.white),
+              ),
+            ],
+          ),
+          Text(
+            alert['title'] ?? 'Demande chauffeur',
+            style: const TextStyle(
+              color: Color(0xFFEFF6FF),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if ((alert['route'] ?? '').isNotEmpty)
+                  Text(
+                    alert['route']!,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                if ((alert['client'] ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Client: ${alert['client']}',
+                    style: const TextStyle(color: Color(0xFFE0F2FE)),
+                  ),
+                ],
+                if ((alert['amount'] ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Montant: ${alert['amount']}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onDismiss,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Color(0xFFBFDBFE)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: const Text('Plus tard'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: onOpenAlerts,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: const Color(0xFF1D4ED8),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: const Text('Ouvrir'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class SectionHeader extends StatelessWidget {
+  const SectionHeader({
+    super.key,
+    required this.eyebrow,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final String eyebrow;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          eyebrow.toUpperCase(),
+          style: const TextStyle(
+            color: kAccent,
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.2,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          title,
+          style: const TextStyle(
+            color: kText,
+            fontSize: 28,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          subtitle,
+          style: const TextStyle(color: kMuted, height: 1.45),
+        ),
+      ],
+    );
+  }
+}
+
+class StatTile extends StatelessWidget {
+  const StatTile({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.accent,
+  });
+
+  final String label;
+  final String value;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: kLine),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 14,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon, color: accent, size: 20),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            value,
+            style: const TextStyle(
+              color: kText,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              color: kMuted,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class QuickFiltersBar extends StatelessWidget {
+  const QuickFiltersBar({super.key, required this.labels});
+
+  final List<String> labels;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: labels.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final selected = index == 0;
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            decoration: BoxDecoration(
+              color: selected ? kPrimary : Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: selected ? kPrimary : kLine),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              labels[index],
+              style: TextStyle(
+                color: selected ? Colors.white : kText,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class AlertHistoryCard extends StatelessWidget {
+  const AlertHistoryCard({
+    super.key,
+    required this.title,
+    required this.route,
+    required this.client,
+    required this.amount,
+    required this.status,
+  });
+
+  final String title;
+  final String route;
+  final String client;
+  final String amount;
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: kLine),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 14,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: kText,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              StatusPill(status: status),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            route,
+            style: const TextStyle(
+              color: kText,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text('Client: $client', style: const TextStyle(color: kMuted)),
+          const SizedBox(height: 8),
+          Text(
+            amount,
+            style: const TextStyle(
+              color: kPrimary,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class EarningsHeroCard extends StatelessWidget {
+  const EarningsHeroCard({super.key, required this.amount});
+
+  final String amount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF111827), Color(0xFF0F172A)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x22000000),
+            blurRadius: 22,
+            offset: Offset(0, 14),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Earnings overview',
+            style: TextStyle(
+              color: Color(0xFF94A3B8),
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.8,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            amount,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 36,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Synthese actuelle des courses finalisees et montants deja traites.',
+            style: TextStyle(
+              color: Color(0xFFCBD5E1),
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class CompactEarningRow extends StatelessWidget {
+  const CompactEarningRow({
+    super.key,
+    required this.title,
+    required this.route,
+    required this.amount,
+  });
+
+  final String title;
+  final String route;
+  final String amount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: kLine),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: kText,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(route, style: const TextStyle(color: kMuted)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            amount,
+            style: const TextStyle(
+              color: kPrimary,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ProfileHeroCard extends StatelessWidget {
+  const ProfileHeroCard({
+    super.key,
+    required this.name,
+    required this.phone,
+    required this.region,
+  });
+
+  final String name;
+  final String phone;
+  final String region;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: kLine),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF111827), Color(0xFF1F2937)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Icon(
+              Icons.person_outline_rounded,
+              color: Colors.white,
+              size: 32,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name.isEmpty ? 'Profil chauffeur' : name,
+                  style: const TextStyle(
+                    color: kText,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  phone,
+                  style: const TextStyle(
+                    color: kMuted,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(region, style: const TextStyle(color: kMuted)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class EmptyStateCard extends StatelessWidget {
+  const EmptyStateCard({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: kLine),
+      ),
+      child: Column(
+        children: [
+          Container(
+            width: 58,
+            height: 58,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3F4F6),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Icon(icon, color: kPrimary),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: kText,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: kMuted, height: 1.45),
           ),
         ],
       ),
@@ -1439,18 +2654,18 @@ class HeaderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFFFFFBF6), Color(0xFFFFEFE7)],
+          colors: [Color(0xFFFFFFFF), Color(0xFFF8FAFC)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(28),
         border: Border.all(color: kLine),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x12000000),
+            color: Color(0x0A000000),
             blurRadius: 18,
             offset: Offset(0, 10),
           ),
@@ -1462,19 +2677,20 @@ class HeaderCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: const Color(0xFFF3F4F6),
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
-              eyebrow,
+              eyebrow.toUpperCase(),
               style: const TextStyle(
-                color: kPrimary,
+                color: kAccent,
+                fontSize: 12,
                 fontWeight: FontWeight.w800,
-                letterSpacing: 0.8,
+                letterSpacing: 1.1,
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1485,8 +2701,8 @@ class HeaderCard extends StatelessWidget {
                     Text(
                       title,
                       style: const TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w800,
+                        fontSize: 30,
+                        fontWeight: FontWeight.w900,
                         color: kText,
                       ),
                     ),
@@ -1536,10 +2752,16 @@ class StatusBadge extends StatelessWidget {
 }
 
 class SectionCard extends StatelessWidget {
-  const SectionCard({super.key, required this.title, required this.child});
+  const SectionCard({
+    super.key,
+    required this.title,
+    required this.child,
+    this.subtitle,
+  });
 
   final String title;
   final Widget child;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -1565,7 +2787,7 @@ class SectionCard extends StatelessWidget {
             width: 54,
             height: 5,
             decoration: BoxDecoration(
-              color: const Color(0xFFFFD2C2),
+              color: const Color(0xFFD1D5DB),
               borderRadius: BorderRadius.circular(999),
             ),
           ),
@@ -1574,10 +2796,20 @@ class SectionCard extends StatelessWidget {
             title,
             style: const TextStyle(
               fontSize: 22,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w900,
               color: kText,
             ),
           ),
+          if (subtitle != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              subtitle!,
+              style: const TextStyle(
+                color: kMuted,
+                height: 1.4,
+              ),
+            ),
+          ],
           const SizedBox(height: 14),
           child,
         ],
@@ -1601,34 +2833,51 @@ class MissionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(bottom: 2),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Colors.white, Color(0xFFFFF5EF)],
+          colors: [Colors.white, Color(0xFFF8FAFC)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(24),
         border: Border.all(color: kLine),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x12000000),
-            blurRadius: 12,
-            offset: Offset(0, 8),
+            color: Color(0x0F000000),
+            blurRadius: 18,
+            offset: Offset(0, 10),
           ),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 48,
-            height: 4,
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFD0BF),
-              borderRadius: BorderRadius.circular(999),
-            ),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF3F4F6),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  'TRIP',
+                  style: const TextStyle(
+                    color: kMuted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              StatusPill(status: status),
+            ],
           ),
           const SizedBox(height: 12),
           Row(
@@ -1638,31 +2887,44 @@ class MissionCard extends StatelessWidget {
                 child: Text(
                   tripTitle(data),
                   style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
                     color: kText,
                   ),
                 ),
               ),
-              StatusPill(status: status),
             ],
           ),
           const SizedBox(height: 10),
-          InfoLine(
-            label: 'Depart',
-            value: '${data['depart'] ?? data['pickupAddress'] ?? '-'}',
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3F4F6),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Column(
+              children: [
+                InfoLine(
+                  label: 'Depart',
+                  value: '${data['depart'] ?? data['pickupAddress'] ?? '-'}',
+                ),
+                InfoLine(
+                  label: 'Destination',
+                  value:
+                      '${data['destination'] ?? data['destinationAddress'] ?? '-'}',
+                ),
+                InfoLine(
+                  label: 'Client',
+                  value:
+                      '${data['Phone'] ?? data['clientPhone'] ?? data['phone'] ?? '-'}',
+                ),
+                InfoLine(
+                  label: 'Montant',
+                  value: formatMoney(tripAmount(data)),
+                ),
+              ],
+            ),
           ),
-          InfoLine(
-            label: 'Destination',
-            value:
-                '${data['destination'] ?? data['destinationAddress'] ?? '-'}',
-          ),
-          InfoLine(
-            label: 'Client',
-            value:
-                '${data['Phone'] ?? data['clientPhone'] ?? data['phone'] ?? '-'}',
-          ),
-          InfoLine(label: 'Montant', value: formatMoney(tripAmount(data))),
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -1727,6 +2989,7 @@ class MetricCard extends StatelessWidget {
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Colors.white),
         boxShadow: const [
           BoxShadow(
             color: Color(0x12000000),
@@ -1738,6 +3001,15 @@ class MetricCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            width: 34,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(height: 12),
           Text(
             label,
             style: TextStyle(color: labelColor, fontWeight: FontWeight.w700),
@@ -1857,33 +3129,33 @@ class StatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Color background = const Color(0xFFF7E7C8);
+    Color background = const Color(0xFFE5E7EB);
     Color foreground = kWarning;
     String label = 'Affectee';
 
     switch (status) {
       case 'accepted':
-        background = const Color(0xFFD8F0F8);
+        background = const Color(0xFFDCFCE7);
         foreground = kAccent;
         label = 'Acceptee';
         break;
       case 'on_the_way':
-        background = const Color(0xFFD8F0F8);
+        background = const Color(0xFFDCFCE7);
         foreground = kAccent;
         label = 'En route';
         break;
       case 'arrived':
-        background = const Color(0xFFD8F0F8);
+        background = const Color(0xFFDCFCE7);
         foreground = kAccent;
         label = 'Sur place';
         break;
       case 'completed':
-        background = const Color(0xFFD7F4E3);
+        background = const Color(0xFFDCFCE7);
         foreground = kSuccess;
         label = 'Terminee';
         break;
       case 'cancelled':
-        background = const Color(0xFFF8DDD8);
+        background = const Color(0xFFFEE2E2);
         foreground = kDanger;
         label = 'Annulee';
         break;
@@ -1968,25 +3240,69 @@ Object? extractComparableDate(Map<String, dynamic> data) {
 }
 
 String requestStatus(Map<String, dynamic> data) {
-  final raw = '${data['status'] ?? ''}'.trim().toLowerCase();
-  final dispatch = '${data['dispatch'] ?? ''}'.trim().toLowerCase();
+  final raw = normalizeStatusValue('${data['status'] ?? ''}');
+  final dispatch = normalizeStatusValue('${data['dispatch'] ?? ''}');
 
-  if (raw == 'accepted' ||
-      raw == 'on_the_way' ||
-      raw == 'arrived' ||
-      raw == 'completed' ||
-      raw == 'cancelled') {
-    return raw;
-  }
-
-  if (dispatch.contains('appel')) return 'assigned';
-  if (dispatch.contains('accept')) return 'accepted';
-  if (dispatch.contains('route')) return 'on_the_way';
-  if (dispatch.contains('place')) return 'arrived';
-  if (dispatch.contains('term')) return 'completed';
-  if (dispatch.contains('annul')) return 'cancelled';
+  if (raw == 'completed' || dispatch == 'completed') return 'completed';
+  if (raw == 'cancelled' || dispatch == 'cancelled') return 'cancelled';
+  if (raw == 'arrived' || dispatch == 'arrived') return 'arrived';
+  if (raw == 'on_the_way' || dispatch == 'on_the_way') return 'on_the_way';
+  if (raw == 'accepted' || dispatch == 'accepted') return 'accepted';
+  if (raw == 'assigned' || dispatch == 'assigned') return 'assigned';
 
   return 'assigned';
+}
+
+String normalizeStatusValue(String raw) {
+  final value = raw
+      .trim()
+      .toLowerCase()
+      .replaceAll('_', ' ')
+      .replaceAll('-', ' ')
+      .replaceAll('é', 'e')
+      .replaceAll('è', 'e')
+      .replaceAll('ê', 'e')
+      .replaceAll('à', 'a')
+      .replaceAll('ù', 'u');
+
+  if (value.isEmpty) return '';
+  if (value.contains('term') ||
+      value.contains('finalis') ||
+      value.contains('complete') ||
+      value.contains('done')) {
+    return 'completed';
+  }
+  if (value.contains('annul') ||
+      value.contains('cancel') ||
+      value.contains('refus') ||
+      value.contains('reject')) {
+    return 'cancelled';
+  }
+  if (value.contains('sur place') ||
+      value.contains('arrive') ||
+      value.contains('place')) {
+    return 'arrived';
+  }
+  if (value.contains('route') ||
+      value.contains('course') ||
+      value.contains('in progress') ||
+      value.contains('ongoing') ||
+      value.contains('en cours')) {
+    return 'on_the_way';
+  }
+  if (value.contains('accept')) {
+    return 'accepted';
+  }
+  if (value.contains('affect') ||
+      value.contains('assigne') ||
+      value.contains('assignee') ||
+      value.contains('appele') ||
+      value.contains('appel') ||
+      value.contains('pending')) {
+    return 'assigned';
+  }
+
+  return value;
 }
 
 bool isCompletedRequest(Map<String, dynamic> data) =>
